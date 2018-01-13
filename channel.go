@@ -29,7 +29,7 @@ type idleConn struct {
 
 func NewChannelPool(config PoolConfig) (Pool, error) {
 	p := &channelPool{
-		conns:     make(chan *idleConn, config.InitConnNum),
+		conns:     make(chan *idleConn, config.MaxConnNum),
 		connFunc:  config.ConnFunc,
 		closeFunc: config.CloseFunc,
 		idelTime:  config.IdelTime,
@@ -45,12 +45,37 @@ func NewChannelPool(config PoolConfig) (Pool, error) {
 	return p, nil
 }
 
-func (pool channelPool) getConns() interface{} {
-	return nil
+func (pool channelPool) getConns() chan *idleConn {
+	pool.mu.Lock()
+	conns := pool.conns
+	pool.mu.Unlock()
+	return conns
 }
 
-func (pool channelPool) Get() interface{} {
-	return nil
+func (pool channelPool) Get() (interface{}, error) {
+	conns := pool.getConns()
+	if conns == nil {
+		return nil, fmt.Errorf("get connections faild")
+	}
+
+	for {
+		select {
+		case wrapConn := <-conns:
+			if timeOut := pool.idelTime; timeOut > 0 {
+				if wrapConn.idelTime.Add(timeOut).Before(time.Now()) {
+					pool.closeFunc(wrapConn)
+					continue
+				}
+			}
+			return wrapConn.conn, nil
+		default:
+			conn, err := pool.connFunc()
+			if err != nil {
+				return nil, err
+			}
+			return conn, err
+		}
+	}
 }
 
 func (pool channelPool) Put() {
