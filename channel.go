@@ -1,40 +1,48 @@
 package pool
 
 import (
-	"net"
 	"time"
+	"sync"
+	"fmt"
 )
 
 type PoolConfig struct {
 	InitConnNum int
 	MaxConnNum  int
-	ConnFunc    func()
-	CloseFunc   func(k interface{})
+	ConnFunc    func() (interface{}, error)
+	CloseFunc   func(interface{}) error
 	IdelTime    time.Duration
 }
 
 type channelPool struct {
-	pool       chan *idleConn
-	maxConnNum int
-	connFunc   func()
-	closeFunc  func(k interface{})
-	idelTime   time.Duration
+	mu        sync.Mutex
+	conns     chan *idleConn
+	connFunc  func() (interface{}, error)
+	closeFunc func(interface{}) error
+	idelTime  time.Duration
 }
 
 type idleConn struct {
-	conn     net.Conn
-	idelTime time.Duration
+	conn     interface{}
+	idelTime time.Time
 }
 
-func NewChannelPool(config PoolConfig) Pool {
+func NewChannelPool(config PoolConfig) (Pool, error) {
 	p := &channelPool{
-		pool:       make(chan *idleConn, config.InitConnNum),
-		maxConnNum: config.MaxConnNum,
-		connFunc:   config.ConnFunc,
-		closeFunc:  config.CloseFunc,
-		idelTime:   config.IdelTime,
+		conns:     make(chan *idleConn, config.InitConnNum),
+		connFunc:  config.ConnFunc,
+		closeFunc: config.CloseFunc,
+		idelTime:  config.IdelTime,
 	}
-	return p
+	for i := 0; i != config.InitConnNum; i++ {
+		conn, err := p.connFunc()
+		if err != nil {
+			p.closeFunc(conn)
+			return nil, fmt.Errorf("create connection faild")
+		}
+		p.conns <- &idleConn{conn: conn, idelTime: time.Now()}
+	}
+	return p, nil
 }
 
 func (pool channelPool) getConns() interface{} {
