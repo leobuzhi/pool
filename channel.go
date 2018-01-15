@@ -3,7 +3,7 @@ package pool
 import (
 	"time"
 	"sync"
-	"fmt"
+	"errors"
 )
 
 type PoolConfig struct {
@@ -28,6 +28,9 @@ type idleConn struct {
 }
 
 func NewChannelPool(config PoolConfig) (Pool, error) {
+	if config.InitConnNum < 0 || config.InitConnNum > config.MaxConnNum || config.MaxConnNum <= 0 {
+		return nil, errors.New("config error")
+	}
 	p := &channelPool{
 		conns:     make(chan *idleConn, config.MaxConnNum),
 		connFunc:  config.ConnFunc,
@@ -38,7 +41,7 @@ func NewChannelPool(config PoolConfig) (Pool, error) {
 		conn, err := p.connFunc()
 		if err != nil {
 			p.closeFunc(conn)
-			return nil, fmt.Errorf("create connection faild")
+			return nil, errors.New("create connection faild")
 		}
 		p.conns <- &idleConn{conn: conn, idelTime: time.Now()}
 	}
@@ -55,7 +58,7 @@ func (pool channelPool) getConns() chan *idleConn {
 func (pool channelPool) Get() (interface{}, error) {
 	conns := pool.getConns()
 	if conns == nil {
-		return nil, fmt.Errorf("get connections faild")
+		return nil, errors.New("get connections faild")
 	}
 
 	for {
@@ -78,18 +81,48 @@ func (pool channelPool) Get() (interface{}, error) {
 	}
 }
 
-func (pool channelPool) Put() {
+func (pool channelPool) Put(conn interface{}) error {
+	if conn == nil {
+		return errors.New("conn is nil")
+	}
 
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+
+	if pool.conns == nil {
+		return pool.closeFunc(conn)
+	}
+
+	select {
+	case pool.conns <- &idleConn{conn: conn, idelTime: time.Now()}:
+		return nil
+	default:
+		return pool.closeFunc(conn)
+	}
 }
 
 func (pool channelPool) Len() int {
-	return 0
+	return len(pool.conns)
 }
 
-func (pool channelPool) Close() {
-
+func (pool channelPool) Close(conn interface{}) error {
+	return pool.closeFunc(conn)
 }
 
 func (pool channelPool) Release() {
+	pool.mu.Lock()
+	conns := pool.conns
+	closeFunc := pool.closeFunc
+	pool.conns = nil
+	pool.connFunc = nil
+	pool.closeFunc = nil
+	pool.mu.Unlock()
 
+	if conns == nil {
+		return
+	}
+	close(conns)
+	for wrapConn := range conns {
+		closeFunc(wrapConn.conn)
+	}
 }

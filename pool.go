@@ -2,8 +2,8 @@ package pool
 
 type Pool interface {
 	Get() (interface{}, error)
-	Put()
+	Put(interface{}) error
 	Len() int
-	Close()
+	Close(interface{}) error
 	Release()
 }
